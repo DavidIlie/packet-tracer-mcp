@@ -120,18 +120,37 @@ class PTCommandBridge:
     def send_and_wait(self, js_code: str, timeout: float = 10.0) -> str | None:
         """Send a command and wait for result callback.
 
-        Uses reportResult() from userfunctions.js which routes the HTTP
-        POST through the QWebEngine webview (XMLHttpRequest is NOT available
-        in the PT Script Engine, only in the webview).
+        Inlines the HTTP POST via window.webview.evaluateJavaScriptAsync
+        directly into each command, so it works without a persistent
+        reportResult function in the Script Engine.
         """
+        # Build the JS that runs in the Script Engine.
+        # Strategy: encode result as base64-safe hex to avoid ALL escaping issues,
+        # then POST from webview via evaluateJavaScriptAsync.
+        url = f"http://127.0.0.1:{self.port}/result"
         wrapped = (
-            f"try {{ var __r = (function(){{ {js_code} }})(); "
-            f"reportResult(String(__r)); "
-            f"}} catch(__e) {{ reportResult('ERROR:' + __e); }}"
+            f"try {{ var __val = (function(){{ {js_code} }})(); "
+            f"if(__val===undefined)__val='OK'; __val=String(__val); "
+            f"}} catch(__e) {{ var __val='ERROR:'+__e; }} "
+            # Encode each char as 2-digit hex to avoid any escaping issues
+            f"var __hex=''; for(var __i=0;__i<__val.length;__i++){{var __c=__val.charCodeAt(__i);__hex+=(__c<16?'0':'')+__c.toString(16);}} "
+            # POST from webview - the hex string is safe (only 0-9a-f)
+            f"window.webview.evaluateJavaScriptAsync("
+            f"\"var x=new XMLHttpRequest();"
+            f"x.open('POST','{url}',true);"
+            f"x.setRequestHeader('Content-Type','text/x-hex');"
+            f"x.send('\" + __hex + \"');\")"
         )
         self._queue.put(wrapped)
         try:
-            return self._results.get(timeout=timeout)
+            raw = self._results.get(timeout=timeout)
+            if raw is None:
+                return None
+            # Decode hex back to string
+            try:
+                return bytes.fromhex(raw).decode("utf-8", errors="replace")
+            except (ValueError, UnicodeDecodeError):
+                return raw  # fallback: return as-is if not hex
         except Empty:
             return None
 

@@ -759,16 +759,31 @@ def register_tools(mcp: FastMCP) -> None:
 
     def _bridge_send_and_wait(js_call: str, timeout: float = 10.0) -> str | None:
         """
-        Envia un comando JS al bridge y espera la respuesta (long-poll GET /result).
-        El comando debe llamar a reportResult(...) internamente para enviar datos back.
-        Requiere que el bridge esté activo y PT conectado.
+        Envia un comando JS al bridge y espera la respuesta.
+        Wraps the code to capture return value, hex-encode it,
+        and POST it back via window.webview.evaluateJavaScriptAsync.
         """
-        status_post, _ = _http_post(f"{_BRIDGE_URL}/queue", js_call)
+        url = f"{_BRIDGE_URL}/result"
+        wrapped = (
+            f"try {{ var __val = (function(){{ {js_call} }})(); "
+            f"if(__val===undefined)__val='OK'; __val=String(__val); "
+            f"}} catch(__e) {{ var __val='ERROR:'+__e; }} "
+            f"var __hex=''; for(var __i=0;__i<__val.length;__i++){{var __c=__val.charCodeAt(__i);__hex+=(__c<16?'0':'')+__c.toString(16);}} "
+            f"window.webview.evaluateJavaScriptAsync("
+            f"\"var x=new XMLHttpRequest();"
+            f"x.open('POST','{url}',true);"
+            f"x.setRequestHeader('Content-Type','text/x-hex');"
+            f"x.send('\" + __hex + \"');\")"
+        )
+        status_post, _ = _http_post(f"{_BRIDGE_URL}/queue", wrapped)
         if status_post != 200:
             return None
         status_get, body = _http_get(f"{_BRIDGE_URL}/result", timeout=timeout)
-        if status_get == 200:
-            return body
+        if status_get == 200 and body:
+            try:
+                return bytes.fromhex(body).decode("utf-8", errors="replace")
+            except (ValueError, UnicodeDecodeError):
+                return body
         return None
 
     def _check_bridge() -> str | None:
@@ -961,3 +976,28 @@ def register_tools(mcp: FastMCP) -> None:
             if status == 200:
                 return "Comando enviado a PT."
             return "Error al enviar comando al bridge."
+
+    @mcp.tool()
+    def pt_read_cli(device_name: str, command: str) -> str:
+        """
+        Ejecuta un comando CLI en un dispositivo y devuelve la salida.
+        Útil para verificar configuraciones (show ip interface brief, show access-lists, etc.)
+
+        Parámetros:
+        - device_name: nombre del dispositivo (ej: 'R1', 'ISP', 'S1')
+        - command: comando CLI a ejecutar (ej: 'show ip interface brief')
+        """
+        err = _check_bridge()
+        if err:
+            return err
+
+        safe_dev = _js_escape(device_name)
+        safe_cmd = _js_escape(command)
+        js_code = (
+            f'return ipc.appWindow().getActiveWorkspace()'
+            f'.getDevice("{safe_dev}").sendCommand("{safe_cmd}");'
+        )
+        result = _bridge_send_and_wait(js_code, timeout=10.0)
+        if result is None:
+            return f"Sin respuesta de PT (timeout). Verifica que {device_name} existe y el bootstrap está corriendo."
+        return result
