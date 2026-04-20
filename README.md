@@ -55,9 +55,27 @@ pip install -e .
 python -m src.packet_tracer_mcp
 ```
 
-This starts both the MCP server on `:39000` and the HTTP bridge on `:54321` automatically.
+This starts the MCP server on `0.0.0.0:39000` (LAN-accessible) and the HTTP bridge on `127.0.0.1:54321` automatically.
 
-> For stdio mode (debug/legacy): `python -m src.packet_tracer_mcp --stdio`
+Host selection (in priority order):
+- `--host 127.0.0.1` flag -- localhost only
+- `PT_MCP_HOST` env var
+- default: `0.0.0.0` (all interfaces)
+
+> Stdio mode (debug/legacy): `python -m src.packet_tracer_mcp --stdio`
+
+#### Connecting from another machine on your LAN
+
+The server binds to all interfaces by default. To reach it from another laptop:
+
+1. Find your host IP (`ipconfig` on Windows, `ifconfig` on macOS/Linux) -- e.g., `10.1.0.7`
+2. Open port 39000 on Windows Firewall (PowerShell as Administrator):
+   ```powershell
+   New-NetFirewallRule -DisplayName "packet-tracer-mcp" -Direction Inbound -LocalPort 39000 -Protocol TCP -Action Allow -Profile Private,Domain
+   ```
+3. On the remote machine, point your MCP client at `http://<host-ip>:39000/mcp` instead of `127.0.0.1`.
+
+The HTTP bridge (port 54321) stays bound to localhost only -- Packet Tracer runs on the same machine as the server, so remote access is not needed.
 
 ### 3. Configure your MCP client
 
