@@ -173,7 +173,12 @@ The LLM can now create devices, links, and configure routers automatically. Ask 
 | `pt_move_device` | Move a device to new canvas coordinates |
 | `pt_delete_link` | Delete a link from a specific interface |
 | `pt_send_raw` | Send arbitrary JS to PT's Script Engine |
+| `pt_ipc` | Call an IPC method on a PT object by dotted path (shortcut for common raw calls) |
 | `pt_read_cli` | Execute a CLI command and read back the output |
+
+## For AI agents
+
+See [AGENTS.md](AGENTS.md) for a practical guide covering tool tiers, silent failure patterns, canonical IPC paths, and when to drop to `pt_send_raw`.
 
 ### Export + Projects
 | Tool | Description |

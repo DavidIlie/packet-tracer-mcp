@@ -1062,6 +1062,130 @@ def register_tools(mcp: FastMCP) -> None:
             return "Error sending command to bridge."
 
     @mcp.tool()
+    def pt_ipc(target: str, method: str, args: list[str] | None = None) -> str:
+        """
+        Call a method on a PT IPC object by dotted target path. Returns the
+        method's result (or the object's properties if method == "list").
+        Saves writing boilerplate JS for common IPC operations.
+
+        Target syntax (traverse chain):
+        - "network"                       -> ipc.network()
+        - "appWindow"                     -> ipc.appWindow()
+        - "lw"                            -> ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()
+        - "ws"                            -> ipc.appWindow().getActiveWorkspace()
+        - "device:R1"                     -> ipc.network().getDevice("R1")
+        - "device:R1.port:Gig0/0"         -> ...getDevice("R1").getPort("Gig0/0")
+        - "device:R1.cl"                  -> ...getDevice("R1").getCommandLine()
+        - "device:R1.port:Gig0/0.link"    -> ...getPort("Gig0/0").getLink()
+
+        Special method "list" returns all available methods/properties on the object.
+
+        Examples:
+          pt_ipc("network", "getDeviceCount")
+          pt_ipc("device:R1", "setName", ["NewR1"])
+          pt_ipc("device:R1.port:Gig0/0", "deleteLink")
+          pt_ipc("device:R1.cl", "enterCommand", ["show ip interface brief"])
+          pt_ipc("device:R1", "list")       # show all methods
+
+        Parameters:
+        - target: dotted path to the object
+        - method: method name to call (or "list" for introspection)
+        - args: list of string args (numbers auto-converted)
+        """
+        err = _check_bridge()
+        if err:
+            return err
+
+        # Build the traversal JS from the target path.
+        # Each segment is either a keyword (network, lw, ws, appWindow, cl, link)
+        # or "kind:name" (device:R1, port:Gig0/0).
+        segments = target.split(".")
+        js_obj = None
+        for i, seg in enumerate(segments):
+            if ":" in seg:
+                kind, name = seg.split(":", 1)
+                safe_name = _js_escape(name)
+                if kind == "device":
+                    js_obj = (
+                        f'ipc.network().getDevice("{safe_name}")'
+                        if js_obj is None
+                        else f'{js_obj}.getDevice("{safe_name}")'
+                    )
+                elif kind == "port":
+                    if js_obj is None:
+                        return f"Error: 'port:' must follow a device (e.g., 'device:R1.port:Gig0/0')"
+                    js_obj = f'{js_obj}.getPort("{safe_name}")'
+                else:
+                    return f"Error: unknown target kind '{kind}' in segment '{seg}'"
+            else:
+                if seg == "network":
+                    js_obj = "ipc.network()"
+                elif seg == "appWindow":
+                    js_obj = "ipc.appWindow()"
+                elif seg == "ws":
+                    js_obj = "ipc.appWindow().getActiveWorkspace()"
+                elif seg == "lw":
+                    js_obj = "ipc.appWindow().getActiveWorkspace().getLogicalWorkspace()"
+                elif seg == "cl":
+                    if js_obj is None:
+                        return f"Error: 'cl' must follow a device (e.g., 'device:R1.cl')"
+                    js_obj = f'{js_obj}.getCommandLine()'
+                elif seg == "link":
+                    if js_obj is None:
+                        return f"Error: 'link' must follow a port"
+                    js_obj = f'{js_obj}.getLink()'
+                else:
+                    return f"Error: unknown target segment '{seg}'"
+
+        if js_obj is None:
+            return f"Error: empty target path"
+
+        # Handle method == "list" -> return enumerable properties
+        if method == "list":
+            list_js = (
+                f'var o = {js_obj}; '
+                f'if (!o) return "NULL"; '
+                f'var out = []; '
+                f'for (var k in o) out.push(k + ":" + typeof o[k]); '
+                f'return out.join(", ");'
+            )
+            result = _bridge_send_and_wait(list_js, timeout=8.0)
+            if result is None:
+                return "No response from PT (timeout)."
+            if result == "NULL":
+                return f"Target '{target}' resolved to null."
+            return result
+
+        # Build the argument list as JS literals.
+        # Auto-convert numeric strings to numbers, everything else -> quoted string.
+        call_args = []
+        for a in args or []:
+            try:
+                if "." in a:
+                    call_args.append(str(float(a)))
+                else:
+                    call_args.append(str(int(a)))
+            except (ValueError, TypeError):
+                call_args.append(f'"{_js_escape(a)}"')
+
+        call_js = (
+            f'var o = {js_obj}; '
+            f'if (!o) return "NULL_TARGET"; '
+            f'if (typeof o.{method} !== "function") return "NO_METHOD:" + typeof o.{method}; '
+            f'var r = o.{method}({", ".join(call_args)}); '
+            f'return r === undefined ? "undefined" : String(r);'
+        )
+        result = _bridge_send_and_wait(call_js, timeout=10.0)
+        if result is None:
+            return "No response from PT (timeout)."
+        if result == "NULL_TARGET":
+            return f"Target '{target}' resolved to null."
+        if result.startswith("NO_METHOD:"):
+            actual = result.split(":", 1)[1]
+            return f"Method '{method}' not found on target (actual type: {actual}). Try pt_ipc('{target}', 'list') to see available methods."
+        return result
+
+    @mcp.tool()
     def pt_read_cli(device_name: str, command: str) -> str:
         """
         Execute a CLI command on a device and return its output.
