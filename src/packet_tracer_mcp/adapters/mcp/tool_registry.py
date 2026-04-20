@@ -839,29 +839,34 @@ def register_tools(mcp: FastMCP) -> None:
     @mcp.tool()
     def pt_delete_device(device_name: str) -> str:
         """
-        Elimina un dispositivo de la topología activa en Packet Tracer.
-        También elimina todos sus enlaces automáticamente.
+        Delete a device from the active Packet Tracer topology.
+        Also removes all its links automatically.
 
-        Parámetros:
-        - device_name: nombre exacto del dispositivo (ej: "R1", "PC3", "Laptop-WAN")
+        Parameters:
+        - device_name: exact name of the device (e.g., "R1", "PC3", "Laptop-WAN")
         """
         err = _check_bridge()
         if err:
             return err
 
         safe_name = _js_escape(device_name)
-        js = f'deleteDevice("{safe_name}")'
+        # Call the native IPC API directly. The PTBuilder `deleteDevice()` helper
+        # doesn't exist in all PT versions, but `lw.removeDevice(name)` does.
+        js = (
+            f'var dev = ipc.network().getDevice("{safe_name}"); '
+            f'if (!dev) return "NOT_FOUND"; '
+            f'var lw = ipc.appWindow().getActiveWorkspace().getLogicalWorkspace(); '
+            f'lw.removeDevice("{safe_name}"); '
+            f'return "OK";'
+        )
         result = _bridge_send_and_wait(js, timeout=8.0)
         if result is None:
-            return f"Sin respuesta de PT. El dispositivo '{device_name}' puede no existir."
-        try:
-            data = json.loads(result)
-            if data.get("success"):
-                return f"Dispositivo '{device_name}' eliminado correctamente."
-            else:
-                return f"Error al eliminar '{device_name}': {data.get('error', 'desconocido')}"
-        except Exception:
-            return f"Respuesta inesperada: {result}"
+            return f"No response from PT. Device '{device_name}' may not exist."
+        if result == "NOT_FOUND":
+            return f"Device '{device_name}' not found in topology."
+        if result == "OK":
+            return f"Device '{device_name}' deleted successfully."
+        return f"Unexpected response: {result}"
 
     @mcp.tool()
     def pt_rename_device(old_name: str, new_name: str) -> str:
